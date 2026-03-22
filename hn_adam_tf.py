@@ -6,7 +6,6 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
     A modified Adam algorithm for deep neural network optimization. 
     """
     def __init__(self, learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-8, name="HN_Adam", **kwargs):
-        # FIX: Keras 3 strictly requires learning_rate passed directly to the base class
         super().__init__(learning_rate=learning_rate, name=name, **kwargs)
         self.beta_1 = beta_1
         self.beta_2 = beta_2
@@ -16,7 +15,9 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         """Initialize optimizer variables."""
         if hasattr(self, "_built") and self._built:
             return
-        self._built = True
+            
+        # FIX 1: We must call the parent class's build method so Keras officially tracks the variables!
+        super().build(var_list) 
         
         self._m = []
         self._v = []
@@ -24,16 +25,17 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         self._lambda_t0 = []
         
         for var in var_list:
-            # FIX: Updated variable naming arguments for Keras 3 compatibility
             self._m.append(self.add_variable_from_reference(reference_variable=var, name="m"))
             self._v.append(self.add_variable_from_reference(reference_variable=var, name="v"))
             self._v_hat.append(self.add_variable_from_reference(reference_variable=var, name="v_hat"))
             
-            lambda_init = tf.random.uniform(shape=var.shape, minval=2.0, maxval=4.0, dtype=var.dtype)
-            base_name = var.name.split(':')[0] if hasattr(var, 'name') and var.name else "param"
-            self._lambda_t0.append(tf.Variable(lambda_init, name=f"{base_name}/lambda_t0", trainable=False))
+            # FIX 2: Create lambda_t0 using Keras's official tracker, then assign the random values
+            l_t0 = self.add_variable_from_reference(reference_variable=var, name="lambda_t0")
+            l_t0.assign(tf.random.uniform(shape=var.shape, minval=2.0, maxval=4.0, dtype=var.dtype))
+            self._lambda_t0.append(l_t0)
+            
+        self._built = True
 
-    # FIX: Keras 3 passes learning_rate dynamically directly into the update step
     def update_step(self, gradient, variable, learning_rate):
         """Performs a single optimization step."""
         if isinstance(gradient, tf.IndexedSlices):
