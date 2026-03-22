@@ -16,7 +16,6 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         if hasattr(self, "_built") and self._built:
             return
             
-        # FIX 1: We must call the parent class's build method so Keras officially tracks the variables!
         super().build(var_list) 
         
         self._m = []
@@ -29,7 +28,6 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
             self._v.append(self.add_variable_from_reference(reference_variable=var, name="v"))
             self._v_hat.append(self.add_variable_from_reference(reference_variable=var, name="v_hat"))
             
-            # FIX 2: Create lambda_t0 using Keras's official tracker, then assign the random values
             l_t0 = self.add_variable_from_reference(reference_variable=var, name="lambda_t0")
             l_t0.assign(tf.random.uniform(shape=var.shape, minval=2.0, maxval=4.0, dtype=var.dtype))
             self._lambda_t0.append(l_t0)
@@ -52,7 +50,8 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         v_hat = self._v_hat[var_key]
         lambda_t0 = self._lambda_t0[var_key]
 
-        m_t_minus_1 = m.value()
+        # FIX: Remove .value() and use the variables directly in the equations
+        m_t_minus_1 = m
 
         m_t = beta_1 * m_t_minus_1 + (1.0 - beta_1) * gradient
         m.assign(m_t)
@@ -65,11 +64,11 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         lambda_t = lambda_t0 - ratio
 
         pow_grad = tf.pow(abs_g_t, lambda_t)
-        v_t = beta_2 * v.value() + (1.0 - beta_2) * pow_grad
+        v_t = beta_2 * v + (1.0 - beta_2) * pow_grad
         v.assign(v_t)
 
         abs_v_t = tf.abs(v_t)
-        v_hat_t = tf.maximum(v_hat.value(), abs_v_t)
+        v_hat_t = tf.maximum(v_hat, abs_v_t)
         v_hat.assign(v_hat_t)
 
         safe_lambda_t = tf.where(tf.equal(lambda_t, 0.0), tf.ones_like(lambda_t), lambda_t)
