@@ -82,10 +82,11 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         m_t = beta_1 * m_t_minus_1 + (1.0 - beta_1) * gradient
         m.assign(m_t)
 
-        # Algorithm 2, Step 7: Compute maximum of previous first moment and absolute gradient
-        # m_max ← Max(m_{t-1}, |g_t|)
+        # Algorithm 2, Step 7: Compute maximum of absolute first moment and absolute gradient
+        # m_max ← Max(|m_{t-1}|, |g_t|) - Both terms as magnitudes for bounded Λ(t)
         abs_g_t = tf.abs(gradient)
-        m_max = tf.maximum(m_t_minus_1, abs_g_t)
+        abs_m_t_minus_1 = tf.abs(m_t_minus_1)
+        m_max = tf.maximum(abs_m_t_minus_1, abs_g_t)
 
         # Algorithm 2, Step 8: Compute adaptive exponent Λ(t)
         # Λ(t) ← Λ₁₀ - (m_{t-1} / m_max)
