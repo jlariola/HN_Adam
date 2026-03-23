@@ -9,8 +9,23 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
     Neural Comput & Applic 35, 17095–17112
     https://doi.org/10.1007/s00521-023-08568-z
     
-    HN_Adam implements Algorithm 2 from the paper, which combines adaptive exponent learning
-    with conditional switching between AMSGrad and standard Adam optimization modes.
+    HN_Adam implements Algorithm 2 from the paper with the following key features:
+    
+    1. ADAPTIVE NORM ("N"): Uses dynamic norm value Λ(t) ∈ [1, 4] that adapts based on 
+       gradient magnitude and momentum. Higher norms (Λ(t) ≥ 2) increase exploration 
+       (larger steps), while lower norms (Λ(t) < 2) increase exploitation (smaller steps).
+    
+    2. HYBRID MECHANISM ("H"): Intelligently switches between Adam and AMSGrad algorithms
+       based on the adaptive norm value:
+       - Λ(t) ≥ 2: Uses Adam algorithm (exploration phase, avoids local minima)
+       - Λ(t) < 2: Switches to AMSGrad algorithm (exploitation phase, convergence)
+    
+    3. ADAPTIVE EXPONENT: The norm Λ(t) is computed as:
+       Λ(t) = Λ_t0 - |m_{t-1}|/m_max
+       where m_max = Max(|m_{t-1}|, |g_t|) ensures bounded norm values.
+    
+    4. SAFE POWER OPERATIONS: Absolute value of gradients is taken before the power
+       operation to ensure numerical stability with arbitrary norm exponents.
     """
     def __init__(self, learning_rate=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-8, name="HN_Adam", **kwargs):
         """
@@ -18,11 +33,12 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         
         Args:
             learning_rate (float): Step size η in Algorithm 2. Default: 0.001
-            beta_1 (float): Exponential decay rate for first moment. Default: 0.9
-            beta_2 (float): Exponential decay rate for second moment. Default: 0.999
-            epsilon (float): Small constant ε for numerical stability. Default: 1e-8
+            beta_1 (float): Exponential decay rate for first moment m_t. Default: 0.9
+            beta_2 (float): Exponential decay rate for second moment v_t. Default: 0.999
+            epsilon (float): Small constant ε for numerical stability in denominators. Default: 1e-8
             name (str): Name of the optimizer. Default: "HN_Adam"
             **kwargs: Additional keyword arguments for base Optimizer class.
+        
         """
         super().__init__(learning_rate=learning_rate, name=name, **kwargs)
         self.beta_1 = beta_1
@@ -33,11 +49,16 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         """
         Initialize optimizer state variables for Algorithm 2.
         
-        Per Algorithm 2 pseudocode:
-        - m: First moment estimate (initialized to 0)
-        - v: Second moment estimate (initialized to 0)
-        - v_hat: Maximum of second moment (initialized to 0, used in AMSGrad mode)
-        - lambda_t0: Adaptive exponent parameter (initialized uniformly in [2.0, 4.0])
+        Per Algorithm 2 pseudocode (Section 5):
+        - m: First moment estimate (exponential moving average of gradients, initialized to 0)
+        - v: Second moment estimate (exponential moving average of squared gradients, initialized to 0)
+        - v_hat: Maximum of second moment (initialized to 0, used only in AMSGrad mode when Λ(t) < 2)
+        - lambda_t0 (Λ_t0): Adaptive exponent threshold parameter
+        
+        The Λ_t0 parameter is initialized randomly in the range [2.0, 4.0] as specified in the paper.
+        This random initialization allows different norm trajectories for different parameters,
+        contributing to the algorithm's adaptive behavior. The actual norm Λ(t) at each step is then
+        computed dynamically based on gradient magnitudes: Λ(t) = Λ_t0 - |m_{t-1}|/m_max
         """
         if hasattr(self, "_built") and self._built:
             return
@@ -61,7 +82,17 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         self._built = True
 
     def update_step(self, gradient, variable, learning_rate):
-        """Performs a single optimization step following Algorithm 2."""
+        """
+        Performs a single optimization step following Algorithm 2 with adaptive norm and hybrid mechanism.
+        
+        The algorithm operates in two phases:
+        1. EXPLORATION PHASE (Λ(t) ≥ 2): Uses standard Adam with adaptive norm for large step sizes
+        2. EXPLOITATION PHASE (Λ(t) < 2): Switches to AMSGrad with adaptive norm for fine-tuning
+        
+        The switching is automatic based on the adaptive norm value, which adjusts dynamically
+        based on the ratio of momentum magnitude to gradient magnitude. Higher norms favor
+        exploration (escaping local minima), while lower norms favor exploitation (convergence).
+        """
         if isinstance(gradient, tf.IndexedSlices):
             raise NotImplementedError("HN_Adam does not currently support sparse gradients.")
 
@@ -89,10 +120,12 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         m_max = tf.maximum(abs_m_t_minus_1, abs_g_t)
 
         # Algorithm 2, Step 8: Compute adaptive exponent Λ(t)
-        # Λ(t) ← Λ₁₀ - (m_{t-1} / m_max)
+        # Λ(t) ← Λ_t0 - (|m_{t-1}| / m_max)
+        # Per Section 5: ratio (m_{t-1})/m_max must be ≤ 1 to keep Λ(t) in [1, 4]
+        # This requires using absolute value of m_{t-1} in numerator
         # Handle edge case where m_max = 0 to avoid division by zero
         safe_m_max = tf.where(tf.equal(m_max, 0.0), tf.ones_like(m_max), m_max)
-        ratio = tf.where(tf.equal(m_max, 0.0), tf.zeros_like(m_t_minus_1), m_t_minus_1 / safe_m_max)
+        ratio = tf.where(tf.equal(m_max, 0.0), tf.zeros_like(abs_m_t_minus_1), abs_m_t_minus_1 / safe_m_max)
         lambda_t = lambda_t0 - ratio
 
         # Algorithm 2, Step 9: Compute second moment with adaptive exponent
@@ -101,8 +134,15 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         v_t = beta_2 * v + (1.0 - beta_2) * pow_grad
         v.assign(v_t)
 
-        # Algorithm 2, Step 10-16: Conditional update based on Λ(t) < 2.0
-        # Switching between AMSGrad (Λ(t) < 2.0) and Adam (Λ(t) ≥ 2.0) modes
+        # Algorithm 2, Step 10-16: Conditional switching based on adaptive norm value
+        # Per Section 5: "the sequence is switched to the AMSGrad algorithm under the condition 
+        # that Λ(t) < 2. This means that HN_Adam uses the modified Adam algorithm with more 
+        # exploration ability of search as long as the norm value is within the range from 2 to 4. 
+        # Otherwise, it uses the AMSGrad algorithm with more exploitation ability."
+        # 
+        # Switching logic:
+        # - Λ(t) ≥ 2 (exploration): Use Adam with adaptive norm (larger effective step size)
+        # - Λ(t) < 2 (exploitation): Use AMSGrad with adaptive norm (more conservative, uses max)
         amsgrad_mask = lambda_t < 2.0
         
         # Algorithm 2, Step 12: Update v_hat only in AMSGrad mode (when Λ(t) < 2.0)
