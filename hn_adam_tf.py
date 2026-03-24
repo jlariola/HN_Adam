@@ -130,6 +130,12 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         ratio = abs_m_t_minus_1 / safe_m_max
         lambda_t = lambda_t0 - ratio
 
+        # Step Size Control Behavior:
+        # - When |g_t| is CLOSE to |m_{t-1}|: m_max ≈ both, ratio ≈ 1 → Λ(t) SMALL
+        #   Smaller Λ → larger denominator v_t^(1/Λ) → SMALLER steps → EXPLOITATION
+        # - When |g_t| DIFFERS from |m_{t-1}|: m_max ≈ max(both), ratio ≈ 0 → Λ(t) LARGE
+        #   Larger Λ → smaller denominator v_t^(1/Λ) → LARGER steps → EXPLORATION
+
         # Algorithm 2, Step 9: Compute second moment with adaptive exponent
         # v_t ← β₂ · v_{t-1} + (1-β₂) · (|g_t|)^Λ(t)
         pow_grad = tf.pow(abs_g_t, lambda_t)
@@ -155,8 +161,11 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         v_hat.assign(v_hat_t)
 
         # Compute denominators for both modes
-        # Compute 1/Λ(t) safely. Since Λ(t) ∈ [1, 4], it's always > 0.
-        # We add a small epsilon guard to prevent any numerical edge cases.
+        # inv_lambda_t = 1 / Λ(t) where Λ(t) ∈ [1, 4]
+        # Therefore: inv_lambda_t ∈ [0.25, 1]
+        # This fractional exponent is the KEY to step size adaptation:
+        # - Small Λ (exploitation): inv_lambda_t ≈ 0.5 → v_t^0.5 is LARGE → small steps
+        # - Large Λ (exploration): inv_lambda_t ≈ 0.25 → v_t^0.25 is SMALL → large steps
         inv_lambda_t = 1.0 / (lambda_t + 1e-8)
 
         # Algorithm 2, Step 13: AMSGrad denominator when Λ(t) < 2
