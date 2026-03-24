@@ -184,6 +184,12 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         # When Λ(t) < 2 (exploitation): use denom_amsgrad = (v_hat_t^(1/Λ(t))) + ε
         denom = tf.where(amsgrad_mask, denom_amsgrad, denom_adam)
 
+        # NUMERICAL STABILITY: Ensure denominator doesn't collapse to near epsilon
+        # When v_t is very small (due to large lambda values and second moment decay),
+        # the denominator can collapse toward epsilon, causing catastrophic step size explosion.
+        # This guard ensures the denominator stays in a safe range while maintaining adaptivity.
+        denom = tf.maximum(denom, epsilon * 10.0)
+
         # Algorithm 2, Step 17: Parameter update
         # θ_t ← θ_{t-1} - η · m_t / denom
         # where η is the learning rate, m_t is the first moment (exponential moving average),
