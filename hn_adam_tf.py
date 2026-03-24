@@ -124,8 +124,8 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         # Per Section 5: ratio (m_{t-1})/m_max must be ≤ 1 to keep Λ(t) in [1, 4]
         # This requires using absolute value of m_{t-1} in numerator
         # Handle edge case where m_max = 0 to avoid division by zero
-        safe_m_max = tf.where(tf.equal(m_max, 0.0), tf.ones_like(m_max), m_max)
-        ratio = tf.where(tf.equal(m_max, 0.0), tf.zeros_like(abs_m_t_minus_1), abs_m_t_minus_1 / safe_m_max)
+        safe_m_max = tf.maximum(m_max, 1e-8)
+        ratio = abs_m_t_minus_1 / safe_m_max
         lambda_t = lambda_t0 - ratio
 
         # Algorithm 2, Step 9: Compute second moment with adaptive exponent
@@ -148,17 +148,17 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         # Algorithm 2, Step 12: Update v_hat only in AMSGrad mode (when Λ(t) < 2.0)
         # v_hat(t) ← Max(v_hat(t-1), |v_t|)
         abs_v_t = tf.abs(v_t)
-        v_hat_conditional = tf.where(amsgrad_mask, tf.maximum(v_hat, abs_v_t), v_hat)
-        v_hat.assign(v_hat_conditional)
+        v_hat_t = tf.maximum(v_hat, abs_v_t)
+        v_hat.assign(v_hat_t)
 
         # Compute denominators for both modes
         # Handle edge case where λ_t = 0 to avoid 1/0 issues
-        safe_lambda_t = tf.where(tf.equal(lambda_t, 0.0), tf.ones_like(lambda_t), lambda_t)
-        inv_lambda_t = tf.where(tf.equal(lambda_t, 0.0), tf.zeros_like(lambda_t), 1.0 / safe_lambda_t)
+        safe_lambda_t = tf.maximum(lambda_t, 1e-8)
+        inv_lambda_t = 1.0 / safe_lambda_t
 
         # Algorithm 2, Step 13: AMSGrad denominator
         # (v_hat(t)^(1/Λ(t))) + ε
-        denom_amsgrad = tf.pow(v_hat_conditional, inv_lambda_t) + epsilon
+        denom_amsgrad = tf.pow(v_hat_t, inv_lambda_t) + epsilon
         
         # Algorithm 2, Step 16: Adam denominator
         # (v_t^(1/Λ(t))) + ε
