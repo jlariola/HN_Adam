@@ -158,11 +158,11 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
 
         # Algorithm 2, Step 13: AMSGrad denominator
         # (v_hat(t)^(1/Λ(t))) + ε
-        denom_amsgrad = tf.pow(v_hat_t, inv_lambda_t) + epsilon
+        denom_amsgrad = tf.pow(v_hat_t + 1e-15, inv_lambda_t) + epsilon
         
         # Algorithm 2, Step 16: Adam denominator
         # (v_t^(1/Λ(t))) + ε
-        denom_adam = tf.pow(abs_v_t, inv_lambda_t) + epsilon
+        denom_adam = tf.pow(abs_v_t + 1e-15, inv_lambda_t) + epsilon
 
         # Select denominator based on Λ(t) < 2.0 condition
         denom = tf.where(amsgrad_mask, denom_amsgrad, denom_adam)
