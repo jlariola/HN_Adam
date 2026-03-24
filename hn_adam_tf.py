@@ -16,9 +16,11 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
        (larger steps), while lower norms (Λ(t) < 2) increase exploitation (smaller steps).
     
     2. HYBRID MECHANISM ("H"): Intelligently switches between Adam and AMSGrad algorithms
-       based on the adaptive norm value:
-       - Λ(t) ≥ 2: Uses Adam algorithm (exploration phase, avoids local minima)
-       - Λ(t) < 2: Switches to AMSGrad algorithm (exploitation phase, convergence)
+       based on the adaptive norm value [ELEMENT-WISE SWITCHING PER PARAMETER]:
+       - Λ(t) ≥ 2: Uses Adam algorithm with adaptive norm (exploration phase)
+         Larger norm exponent → larger effective step size → more exploration, avoids local minima
+       - Λ(t) < 2: Switches to AMSGrad algorithm with adaptive norm (exploitation phase)
+         Smaller norm exponent → smaller effective step size → more refined convergence, fine-tuning
     
     3. ADAPTIVE EXPONENT: The norm Λ(t) is computed as:
        Λ(t) = Λ_t0 - |m_{t-1}|/m_max
@@ -145,29 +147,38 @@ class HN_Adam(tf.keras.optimizers.Optimizer):
         # - Λ(t) < 2 (exploitation): Use AMSGrad with adaptive norm (more conservative, uses max)
         amsgrad_mask = lambda_t < 2.0
         
-        # Algorithm 2, Step 12: Update v_hat only in AMSGrad mode (when Λ(t) < 2.0)
+        # Algorithm 2, Step 12: Update v_hat continuously (used only in AMSGrad mode)
         # v_hat(t) ← Max(v_hat(t-1), |v_t|)
+        # We maintain v_hat at every step for AMSGrad mode when Λ(t) < 2
         abs_v_t = tf.abs(v_t)
         v_hat_t = tf.maximum(v_hat, abs_v_t)
         v_hat.assign(v_hat_t)
 
         # Compute denominators for both modes
-        # Handle edge case where λ_t = 0 to avoid 1/0 issues
-        safe_lambda_t = tf.maximum(lambda_t, 1e-8)
-        inv_lambda_t = 1.0 / safe_lambda_t
+        # Compute 1/Λ(t) safely. Since Λ(t) ∈ [1, 4], it's always > 0.
+        # We add a small epsilon guard to prevent any numerical edge cases.
+        inv_lambda_t = 1.0 / (lambda_t + 1e-8)
 
-        # Algorithm 2, Step 13: AMSGrad denominator
+        # Algorithm 2, Step 13: AMSGrad denominator when Λ(t) < 2
         # (v_hat(t)^(1/Λ(t))) + ε
+        # Add small constant (1e-15) before power to ensure numerical stability
+        # when v_hat_t is very small and 1/Λ(t) is a large exponent
         denom_amsgrad = tf.pow(v_hat_t + 1e-15, inv_lambda_t) + epsilon
-        
-        # Algorithm 2, Step 16: Adam denominator
+
+        # Algorithm 2, Step 16: Adam denominator when Λ(t) ≥ 2
         # (v_t^(1/Λ(t))) + ε
+        # Uses current v_t (not max) for immediate gradient adaptation
         denom_adam = tf.pow(abs_v_t + 1e-15, inv_lambda_t) + epsilon
 
         # Select denominator based on Λ(t) < 2.0 condition
+        # When Λ(t) ≥ 2 (exploration): use denom_adam = (v_t^(1/Λ(t))) + ε
+        # When Λ(t) < 2 (exploitation): use denom_amsgrad = (v_hat_t^(1/Λ(t))) + ε
         denom = tf.where(amsgrad_mask, denom_amsgrad, denom_adam)
 
-        # Parameter update: θ_t ← θ_{t-1} - η · m_t / denom
+        # Algorithm 2, Step 17: Parameter update
+        # θ_t ← θ_{t-1} - η · m_t / denom
+        # where η is the learning rate, m_t is the first moment (exponential moving average),
+        # and denom is the denominator computed adaptively based on the adaptive norm Λ(t)
         variable.assign_sub(lr * (m_t / denom))
 
     def get_config(self):
